@@ -1,7 +1,7 @@
 import pygame
 import os
 import random
-#import neat
+import neat
 import time
 pygame.font.init()
 
@@ -10,6 +10,9 @@ pygame.init()
 #dimension of the screen
 WIN_WIDTH = 500
 WIN_HEIGHT = 800
+
+GEN = 0
+
 
 #get the images
 BIRD_IMGS = [
@@ -38,6 +41,7 @@ BASE_IMG = pygame.transform.scale2x(BASE_IMG)
 BG_IMG = pygame.transform.scale2x(BG_IMG)
 
 STAT_FONT = pygame.font.SysFont("comicsans", 30)
+
 
 #bird class
 
@@ -211,7 +215,7 @@ class Base:
         win.blit(self.IMG, (self.x1, self.y))
         win.blit(self.IMG, (self.x2, self.y))
     
-def draw_window(win, bird, pipes, base, score):
+def draw_window(win, birds, pipes, base, score, gen):
     #puts background
     win.blit(BG_IMG, (0,0))
     
@@ -220,18 +224,41 @@ def draw_window(win, bird, pipes, base, score):
 
     text = STAT_FONT.render("Score: " + str(score), 1,(255,255,255))
     win.blit(text, (WIN_WIDTH - 10 - text.get_width(), 10))
+
+    text = STAT_FONT.render("Gen: " + str(gen), 1,(255,255,255))
+    win.blit(text, (10, 10))
     
     base.draw(win)
-
-    bird.draw(win)
+    for bird in birds:
+        bird.draw(win)
+    
     pygame.display.update()
 
 
-def main():
-    bird = Bird(230, 350)
+def main(genomes, config):
+    global GEN
+    GEN += 1
+    nets = []
+    ge = []
+    birds = []
+
+    for _,g in genomes:
+        #setup neural network for each bird in list
+        net = neat.nn.FeedForwardNetwork.create(g, config)
+        nets.append(net)
+        #add birds to list
+        birds.append(Bird(230, 350))
+        #initialize fitness to 0, add genome to ge list
+        g.fitness = 0
+        ge.append(g)
+
+
+
+    #initialize base and pipes
     base = Base(730)
     pipes = [Pipe(700)]
 
+    #set the window and clock
     win = pygame.display.set_mode((WIN_WIDTH, WIN_HEIGHT))
     clock = pygame.time.Clock()
 
@@ -241,40 +268,106 @@ def main():
     run = True
     while run:
         clock.tick(30)
+        #allows exit button to function
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 run = False
+                pygame.quit()
+                quit()
+
+        #make sure we are looking at correct pipe
+        pipe_ind = 0
+        if len(birds) > 0:
+            if len(pipes) > 1 and birds[0].x > pipes[0].x + pipes[0].PIPE_TOP.get_width():
+                pipe = 1
+        else: #there are no birds left - ends generation
+            run = False
+            break
+
+        
+        for x, bird in enumerate(birds):
+            bird.move()
+            #slightly increment fitness for not hitting ceiling/floor
+            ge[x].fitness += 0.1
+
+            #getting the output from neural network (to jump or not), by passing in inputs
+            output = nets[x].activate((bird.y, abs(bird.y - pipes[pipe_ind].height),
+                                        abs(bird.y - pipes[pipe_ind].bottom)))
+            if output[0] > 0.5:
+                bird.jump()
+
 
         add_pipe = False
+        #rem holds the birds removed
         rem = []
         for pipe in pipes:
-            if pipe.collide(bird):
-                pass
-            
+            for x, bird in enumerate(birds):
+                if pipe.collide(bird):
+                    #fitness score lowered if bird collides with pipe
+                    ge[x].fitness -= 1
+                    #bird removed from bird list, neural network list, and genome list
+                    birds.pop(x)
+                    nets.pop(x)
+                    ge.pop(x)
+
+                #if bird is to the right of pipe, add a pipe
+                if not pipe.passed and pipe.x < bird.x:
+                    pipe.passed = True
+                    add_pipe = True
+
+            #if pipe has passed off the screen, add to rem
             if pipe.x + pipe.PIPE_TOP.get_width() < 0:
                 rem.append(pipe)
 
-            if not pipe.passed and pipe.x < bird.x:
-                pipe.passed = True
-                add_pipe = True
-
             pipe.move()
 
+        #adds new pipe and increases score
         if add_pipe:
             score += 1
+            #all the birds in this part of the code have passed the pipe
+            #so their fitness gets a boost for passing the pipe
+            for g in ge:
+                g.fitness += 5
             pipes.append(Pipe(700))
 
+        #clears passed pipes
         for r in rem:
             pipes.remove(r)
 
-        if bird.y + bird.img.get_height() >= 730:
-            pass
+        for x, bird in enumerate(birds):   
+            #ends if bird hits the floor or ceiling
+            if bird.y + bird.img.get_height() >= 730 or bird.y < 0:
+                #same deal, pop from the lists
+                birds.pop(x)
+                nets.pop(x)
+                ge.pop(x)
         
+
         base.move()
-        draw_window(win, bird, pipes, base, score)
+        draw_window(win, birds, pipes, base, score, GEN)
 
-    pygame.quit()
-    quit()
+    
 
-main()
 
+def run(config_path):
+    #sets config to default parameters in the config-feedforward txt file
+    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                                neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                                config_path)
+    
+    #generates population based on the config file
+    p = neat.Population(config)
+
+    #allows information about generations/fitness to be seen in the console
+    p.add_reporter(neat.StdOutReporter(True))
+    stats = neat.StatisticsReporter()
+    p.add_reporter(stats)
+
+    winner = p.run(main,50)
+    
+
+#get path to configuration file
+if __name__ == "__main__":
+    local_dir = os.path.dirname(__file__)
+    config_path = os.path.join(local_dir, "config-feedforward.txt")
+    run(config_path)
